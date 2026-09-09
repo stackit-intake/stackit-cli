@@ -20,7 +20,8 @@ import (
 )
 
 const (
-	limitFlag = "limit"
+	limitFlag   = "limit"
+	maxPageSize = 100
 )
 
 // inputModel struct holds all the input parameters for the command
@@ -61,16 +62,9 @@ func NewCmd(p *types.CmdParams) *cobra.Command {
 			}
 
 			// Call API
-			req := buildRequest(ctx, model, apiClient)
-			resp, err := req.Execute()
+			intakes, err := fetchIntakes(ctx, model, apiClient)
 			if err != nil {
-				return fmt.Errorf("list Intakes: %w", err)
-			}
-			intakes := resp.GetIntakes()
-
-			// Truncate output
-			if model.Limit != nil && len(intakes) > int(*model.Limit) {
-				intakes = intakes[:*model.Limit]
+				return err
 			}
 
 			projectLabel := model.ProjectId
@@ -118,9 +112,53 @@ func parseInput(p *print.Printer, cmd *cobra.Command) (*inputModel, error) {
 }
 
 // buildRequest creates the API request to list Intakes
-func buildRequest(ctx context.Context, model *inputModel, apiClient *intake.APIClient) intake.ApiListIntakesRequest {
+func buildRequest(ctx context.Context, model *inputModel, apiClient *intake.APIClient, pageToken *string, pageSize int32) intake.ApiListIntakesRequest {
 	req := apiClient.DefaultAPI.ListIntakes(ctx, model.ProjectId, model.Region)
+	if pageToken != nil {
+		req = req.PageToken(*pageToken)
+	}
+	req = req.PageSize(pageSize)
 	return req
+}
+
+func fetchIntakes(ctx context.Context, model *inputModel, apiClient *intake.APIClient) ([]intake.IntakeResponse, error) {
+	var pageToken *string
+	var intakes []intake.IntakeResponse
+	for {
+		pageSize := int32(maxPageSize)
+		if model.Limit != nil {
+			remaining := *model.Limit - int64(len(intakes))
+			if remaining <= 0 {
+				break
+			}
+			if remaining < int64(pageSize) {
+				pageSize = int32(remaining)
+			}
+		}
+
+		req := buildRequest(ctx, model, apiClient, pageToken, pageSize)
+		resp, err := req.Execute()
+		if err != nil {
+			return nil, fmt.Errorf("list Intakes: %w", err)
+		}
+		respIntakes := resp.GetIntakes()
+		if len(respIntakes) == 0 {
+			break
+		}
+		intakes = append(intakes, respIntakes...)
+
+		if model.Limit != nil && len(intakes) >= int(*model.Limit) {
+			intakes = intakes[:*model.Limit]
+			break
+		}
+
+		if !resp.HasNextPageToken() || resp.GetNextPageToken() == "" {
+			break
+		}
+		token := resp.GetNextPageToken()
+		pageToken = &token
+	}
+	return intakes, nil
 }
 
 // outputResult formats the API response and prints it to the console

@@ -21,7 +21,8 @@ import (
 )
 
 const (
-	limitFlag = "limit"
+	limitFlag   = "limit"
+	maxPageSize = 100
 )
 
 // inputModel struct holds all the input parameters for the command
@@ -62,16 +63,9 @@ func NewCmd(p *types.CmdParams) *cobra.Command {
 			}
 
 			// Call API
-			req := buildRequest(ctx, model, apiClient)
-			resp, err := req.Execute()
+			runners, err := fetchIntakeRunners(ctx, model, apiClient)
 			if err != nil {
-				return fmt.Errorf("list Intake Runners: %w", err)
-			}
-			runners := resp.GetIntakeRunners()
-
-			// Truncate output
-			if model.Limit != nil && len(runners) > int(*model.Limit) {
-				runners = runners[:*model.Limit]
+				return err
 			}
 
 			projectLabel := model.ProjectId
@@ -119,12 +113,53 @@ func parseInput(p *print.Printer, cmd *cobra.Command) (*inputModel, error) {
 }
 
 // buildRequest creates the API request to list Intake Runners
-func buildRequest(ctx context.Context, model *inputModel, apiClient *intake.APIClient) intake.ApiListIntakeRunnersRequest {
+func buildRequest(ctx context.Context, model *inputModel, apiClient *intake.APIClient, pageToken *string, pageSize int32) intake.ApiListIntakeRunnersRequest {
 	req := apiClient.DefaultAPI.ListIntakeRunners(ctx, model.ProjectId, model.Region)
-	// Note: we do support API pagination, but for consistency with other services, we fetch all items and apply
-	// client-side limit.
-	// A more advanced implementation could use the --limit flag to set the API's PageSize.
+	if pageToken != nil {
+		req = req.PageToken(*pageToken)
+	}
+	req = req.PageSize(pageSize)
 	return req
+}
+
+func fetchIntakeRunners(ctx context.Context, model *inputModel, apiClient *intake.APIClient) ([]intake.IntakeRunnerResponse, error) {
+	var pageToken *string
+	var runners []intake.IntakeRunnerResponse
+	for {
+		pageSize := int32(maxPageSize)
+		if model.Limit != nil {
+			remaining := *model.Limit - int64(len(runners))
+			if remaining <= 0 {
+				break
+			}
+			if remaining < int64(pageSize) {
+				pageSize = int32(remaining)
+			}
+		}
+
+		req := buildRequest(ctx, model, apiClient, pageToken, pageSize)
+		resp, err := req.Execute()
+		if err != nil {
+			return nil, fmt.Errorf("list Intake Runners: %w", err)
+		}
+		respRunners := resp.GetIntakeRunners()
+		if len(respRunners) == 0 {
+			break
+		}
+		runners = append(runners, respRunners...)
+
+		if model.Limit != nil && len(runners) >= int(*model.Limit) {
+			runners = runners[:*model.Limit]
+			break
+		}
+
+		if !resp.HasNextPageToken() || resp.GetNextPageToken() == "" {
+			break
+		}
+		token := resp.GetNextPageToken()
+		pageToken = &token
+	}
+	return runners, nil
 }
 
 // outputResult formats the API response and prints it to the console

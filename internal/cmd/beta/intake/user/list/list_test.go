@@ -64,6 +64,7 @@ func fixtureInputModel(mods ...func(model *inputModel)) *inputModel {
 
 func fixtureRequest(mods ...func(request *intake.ApiListIntakeUsersRequest)) intake.ApiListIntakeUsersRequest {
 	request := testClient.DefaultAPI.ListIntakeUsers(testCtx, testProjectId, testRegion, testIntakeId)
+	request = request.PageSize(maxPageSize)
 	for _, mod := range mods {
 		mod(&request)
 	}
@@ -143,18 +144,30 @@ func TestBuildRequest(t *testing.T) {
 	tests := []struct {
 		description     string
 		model           *inputModel
+		pageToken       *string
+		pageSize        int32
 		expectedRequest intake.ApiListIntakeUsersRequest
 	}{
 		{
 			description:     "base",
 			model:           fixtureInputModel(),
+			pageSize:        maxPageSize,
 			expectedRequest: fixtureRequest(),
+		},
+		{
+			description: "with page token",
+			model:       fixtureInputModel(),
+			pageToken:   utils.Ptr("token"),
+			pageSize:    maxPageSize,
+			expectedRequest: fixtureRequest(func(request *intake.ApiListIntakeUsersRequest) {
+				*request = request.PageToken("token")
+			}),
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.description, func(t *testing.T) {
-			request := buildRequest(testCtx, tt.model, testClient)
+			request := buildRequest(testCtx, tt.model, testClient, tt.pageToken, tt.pageSize)
 
 			diff := cmp.Diff(request, tt.expectedRequest,
 				cmp.AllowUnexported(tt.expectedRequest),

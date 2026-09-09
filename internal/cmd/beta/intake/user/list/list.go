@@ -22,6 +22,7 @@ import (
 const (
 	intakeIdFlag = "intake-id"
 	limitFlag    = "limit"
+	maxPageSize  = 100
 )
 
 // inputModel struct holds all the input parameters for the command
@@ -63,16 +64,9 @@ func NewCmd(p *types.CmdParams) *cobra.Command {
 			}
 
 			// Call API
-			req := buildRequest(ctx, model, apiClient)
-			resp, err := req.Execute()
+			users, err := fetchIntakeUsers(ctx, model, apiClient)
 			if err != nil {
-				return fmt.Errorf("list Intake Users: %w", err)
-			}
-			users := resp.GetIntakeUsers()
-
-			// Truncate output
-			if model.Limit != nil && len(users) > int(*model.Limit) {
-				users = users[:*model.Limit]
+				return err
 			}
 
 			projectLabel := model.ProjectId
@@ -125,9 +119,53 @@ func parseInput(p *print.Printer, cmd *cobra.Command) (*inputModel, error) {
 }
 
 // buildRequest creates the API request to list Intake Users
-func buildRequest(ctx context.Context, model *inputModel, apiClient *intake.APIClient) intake.ApiListIntakeUsersRequest {
+func buildRequest(ctx context.Context, model *inputModel, apiClient *intake.APIClient, pageToken *string, pageSize int32) intake.ApiListIntakeUsersRequest {
 	req := apiClient.DefaultAPI.ListIntakeUsers(ctx, model.ProjectId, model.Region, *model.IntakeId)
+	if pageToken != nil {
+		req = req.PageToken(*pageToken)
+	}
+	req = req.PageSize(pageSize)
 	return req
+}
+
+func fetchIntakeUsers(ctx context.Context, model *inputModel, apiClient *intake.APIClient) ([]intake.IntakeUserResponse, error) {
+	var pageToken *string
+	var users []intake.IntakeUserResponse
+	for {
+		pageSize := int32(maxPageSize)
+		if model.Limit != nil {
+			remaining := *model.Limit - int64(len(users))
+			if remaining <= 0 {
+				break
+			}
+			if remaining < int64(pageSize) {
+				pageSize = int32(remaining)
+			}
+		}
+
+		req := buildRequest(ctx, model, apiClient, pageToken, pageSize)
+		resp, err := req.Execute()
+		if err != nil {
+			return nil, fmt.Errorf("list Intake Users: %w", err)
+		}
+		respUsers := resp.GetIntakeUsers()
+		if len(respUsers) == 0 {
+			break
+		}
+		users = append(users, respUsers...)
+
+		if model.Limit != nil && len(users) >= int(*model.Limit) {
+			users = users[:*model.Limit]
+			break
+		}
+
+		if !resp.HasNextPageToken() || resp.GetNextPageToken() == "" {
+			break
+		}
+		token := resp.GetNextPageToken()
+		pageToken = &token
+	}
+	return users, nil
 }
 
 // outputResult formats the API response and prints it to the console
