@@ -139,7 +139,7 @@ func fetchIntakeUsers(ctx context.Context, model *inputModel, apiClient *intake.
 				break
 			}
 			if remaining < int64(pageSize) {
-				pageSize = int32(remaining)
+				pageSize = int32(remaining) // #nosec G115 -- remaining is positive and smaller than pageSize (100)
 			}
 		}
 
